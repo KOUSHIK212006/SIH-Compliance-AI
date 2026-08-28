@@ -1,0 +1,30 @@
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ML files
+*.pt
+*.pth
+*.onnx
+runs/
+
+# Data
+data/raw/
+data/processed/
+
+# Logs
+*.log
