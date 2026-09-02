@@ -1,0 +1,148 @@
+[1mdiff --git a/scripts/test_api.py b/scripts/test_api.py[m
+[1mindex 37dc99c..360c4cc 100644[m
+[1m--- a/scripts/test_api.py[m
+[1m+++ b/scripts/test_api.py[m
+[36m@@ -22,7 +22,7 @@[m [mdef _pipeline_report():[m
+ [m
+ def _run_tests():[m
+     client = TestClient(app)[m
+[31m-    assert client.get("/health").json() == {"status": "ok"}[m
+[32m+[m[32m    assert client.get("/health").json() == {"status": "ok", "service": "SIH-Compliance-AI"}[m
+ [m
+     valid = client.post("/analyze-text", json={[m
+         "product_name": "Example Product",[m
+[36m@@ -34,6 +34,19 @@[m [mdef _run_tests():[m
+     assert body["product_name"] == "Example Product"[m
+     assert body["ingredient_assessments"][m
+ [m
+[32m+[m[32m    original_pipeline = routes.run_product_pipeline[m
+[32m+[m[32m    routes.run_product_pipeline = lambda **kwargs: _pipeline_report()[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        analyze = client.post([m
+[32m+[m[32m            "/analyze",[m
+[32m+[m[32m            data={"product_name": "Example Product"},[m
+[32m+[m[32m            files={"file": ("label.png", io.BytesIO(b"\x89PNG\r\n\x1a\nTEST"), "image/png")},[m
+[32m+[m[32m        )[m
+[32m+[m[32m    finally:[m
+[32m+[m[32m        routes.run_product_pipeline = original_pipeline[m
+[32m+[m[32m    assert analyze.status_code == 200[m
+[32m+[m[32m    assert analyze.json()["product_name"] == "Test Product"[m
+[32m+[m
+     repeat = client.post("/analyze-text", json={"ingredient_text": "Ingredients: sugar"})[m
+     repeat_again = client.post("/analyze-text", json={"ingredient_text": "Ingredients: sugar"})[m
+     assert repeat.status_code == repeat_again.status_code == 200[m
+[1mdiff --git a/src/api/routes.py b/src/api/routes.py[m
+[1mindex 05051b7..94031f1 100644[m
+[1m--- a/src/api/routes.py[m
+[1m+++ b/src/api/routes.py[m
+[36m@@ -1,91 +1,44 @@[m
+ """HTTP routes that delegate to the existing pipeline and decision engine."""[m
+[31m-from pathlib import Path[m
+[31m-import tempfile[m
+[31m-from typing import Any[m
+[32m+[m[32mfrom typing import Optional[m
+ [m
+[31m-from fastapi import APIRouter, File, HTTPException, UploadFile[m
+[32m+[m[32mfrom fastapi import APIRouter, File, Form, HTTPException, UploadFile[m
+ [m
+[31m-from src.decision import assess_product[m
+ from src.pipeline import run_product_pipeline[m
+ [m
+ from .models import AnalyzeTextRequest, ProductAssessmentResponse[m
+[32m+[m[32mfrom .service import APIServiceError, analyze_image as service_analyze_image, analyze_text[m
+ [m
+ [m
+ router = APIRouter()[m
+[31m-MAX_IMAGE_BYTES = 10 * 1024 * 1024[m
+[31m-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp"}[m
+[31m-ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}[m
+[31m-[m
+[31m-[m
+[31m-def _assessment_from_pipeline(report: dict) -> dict:[m
+[31m-    try:[m
+[31m-        assessment = assess_product(report)[m
+[31m-    except Exception as exc:[m
+[31m-        raise HTTPException(status_code=500, detail="Product assessment failed") from exc[m
+[31m-    return ProductAssessmentResponse.model_validate(assessment).model_dump()[m
+[32m+[m[32mdef _service_error(error: APIServiceError) -> HTTPException:[m
+[32m+[m[32m    return HTTPException(status_code=error.status_code, detail=str(error))[m
+ [m
+ [m
+ @router.get("/health")[m
+ def health() -> dict:[m
+[31m-    return {"status": "ok"}[m
+[32m+[m[32m    return {"status": "ok", "service": "SIH-Compliance-AI"}[m
+ [m
+ [m
+ @router.post("/analyze-text", response_model=ProductAssessmentResponse)[m
+[31m-def analyze_text(request: AnalyzeTextRequest) -> dict:[m
+[32m+[m[32mdef analyze_text_route(request: AnalyzeTextRequest) -> dict:[m
+     try:[m
+[31m-        report = run_product_pipeline([m
+[31m-            ocr_text=request.ingredient_text,[m
+[31m-            product_data={"product_name": request.product_name} if request.product_name else {},[m
+[31m-        )[m
+[31m-        return _assessment_from_pipeline(report)[m
+[31m-    except HTTPException:[m
+[31m-        raise[m
+[31m-    except Exception as exc:[m
+[31m-        raise HTTPException(status_code=500, detail="Text analysis failed") from exc[m
+[32m+[m[32m        return analyze_text(request.ingredient_text, request.product_name, pipeline_runner=run_product_pipeline)[m
+[32m+[m[32m    except APIServiceError as exc:[m
+[32m+[m[32m        raise _service_error(exc) from exc[m
+ [m
+ [m
+[31m-@router.post("/analyze-image", response_model=ProductAssessmentResponse)[m
+[31m-async def analyze_image(file: UploadFile = File(...), product_name: str | None = None) -> dict:[m
+[31m-    suffix = Path(file.filename or "").suffix.casefold()[m
+[31m-    if file.content_type not in ALLOWED_IMAGE_TYPES or suffix not in ALLOWED_IMAGE_SUFFIXES:[m
+[31m-        raise HTTPException(status_code=415, detail="Unsupported image type")[m
+[31m-[m
+[31m-    temporary_path = None[m
+[32m+[m[32m@router.post("/analyze", response_model=ProductAssessmentResponse)[m
+[32m+[m[32masync def analyze(file: UploadFile = File(...), product_name: Optional[str] = Form(default=None)) -> dict:[m
+     try:[m
+[31m-        content = await file.read(MAX_IMAGE_BYTES + 1)[m
+[31m-        if not content:[m
+[31m-            raise HTTPException(status_code=400, detail="Image upload is empty")[m
+[31m-        if len(content) > MAX_IMAGE_BYTES:[m
+[31m-            raise HTTPException(status_code=413, detail="Image exceeds the 10 MB limit")[m
+[32m+[m[32m        return await service_analyze_image(file, product_name, pipeline_runner=run_product_pipeline)[m
+[32m+[m[32m    except APIServiceError as exc:[m
+[32m+[m[32m        raise _service_error(exc) from exc[m
+ [m
+[31m-        # Validate image signature before handing the temporary path to OCR.[m
+[31m-        signatures = {[m
+[31m-            ".png": b"\x89PNG\r\n\x1a\n",[m
+[31m-            ".jpg": b"\xff\xd8\xff",[m
+[31m-            ".jpeg": b"\xff\xd8\xff",[m
+[31m-            ".webp": b"RIFF",[m
+[31m-            ".bmp": b"BM",[m
+[31m-        }[m
+[31m-        if not content.startswith(signatures[suffix]):[m
+[31m-            raise HTTPException(status_code=400, detail="Uploaded file content is not a valid image")[m
+ [m
+[31m-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:[m
+[31m-            temporary.write(content)[m
+[31m-            temporary_path = temporary.name[m
+[31m-        report = run_product_pipeline([m
+[31m-            image_path=temporary_path,[m
+[31m-            product_data={"product_name": product_name} if product_name else {},[m
+[31m-        )[m
+[31m-        if report.get("status") == "ocr_failed":[m
+[31m-            raise HTTPException(status_code=422, detail="Image OCR failed")[m
+[31m-        return _assessment_from_pipeline(report)[m
+[31m-    except HTTPException:[m
+[31m-        raise[m
+[31m-    except Exception as exc:[m
+[31m-        raise HTTPException(status_code=500, detail="Image analysis failed") from exc[m
+[31m-    finally:[m
+[31m-        if temporary_path:[m
+[31m-            Path(temporary_path).unlink(missing_ok=True)[m
+[32m+[m[32m@router.post("/analyze-image", response_model=ProductAssessmentResponse)[m
+[32m+[m[32masync def analyze_image(file: UploadFile = File(...), product_name: Optional[str] = Form(default=None)) -> dict:[m
+[32m+[m[32m    """Compatibility alias for the original image endpoint."""[m
+[32m+[m[32m    return await analyze(file, product_name)[m
+ [m
+ [m
+ __all__ = ["router"][m

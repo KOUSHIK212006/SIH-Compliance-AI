@@ -22,7 +22,7 @@ def _pipeline_report():
 
 def _run_tests():
     client = TestClient(app)
-    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/health").json() == {"status": "ok", "service": "SIH-Compliance-AI"}
 
     valid = client.post("/analyze-text", json={
         "product_name": "Example Product",
@@ -33,6 +33,19 @@ def _run_tests():
     assert {"product_name", "overall_status", "ingredient_assessments", "compliance_findings", "health_findings", "evidence", "explanations", "confidence", "uncertainty", "recommendations"}.issubset(body)
     assert body["product_name"] == "Example Product"
     assert body["ingredient_assessments"]
+
+    original_pipeline = routes.run_product_pipeline
+    routes.run_product_pipeline = lambda **kwargs: _pipeline_report()
+    try:
+        analyze = client.post(
+            "/analyze",
+            data={"product_name": "Example Product"},
+            files={"file": ("label.png", io.BytesIO(b"\x89PNG\r\n\x1a\nTEST"), "image/png")},
+        )
+    finally:
+        routes.run_product_pipeline = original_pipeline
+    assert analyze.status_code == 200
+    assert analyze.json()["product_name"] == "Test Product"
 
     repeat = client.post("/analyze-text", json={"ingredient_text": "Ingredients: sugar"})
     repeat_again = client.post("/analyze-text", json={"ingredient_text": "Ingredients: sugar"})
