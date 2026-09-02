@@ -6,6 +6,7 @@ from src.analysis import analyze_ingredient
 from src.compliance import evaluate_ingredients
 from src.ingredients import extract_ingredient_section, normalize_ingredient, parse_ingredients
 from src.rag import retrieve_ingredient_evidence
+from src.regulatory import match_ingredient
 from src.xai import explain_ingredient_analysis
 
 
@@ -19,6 +20,7 @@ class PipelineConfig:
     rag_enabled: bool = False
     rag_top_k: int = 5
     xai_enabled: bool = True
+    regulatory_evidence_enabled: bool = False
 
 
 def _error(stage: str, message: str) -> Dict[str, str]:
@@ -60,6 +62,7 @@ def run_product_pipeline(
     config: Optional[PipelineConfig] = None,
     rules: Optional[List[Dict[str, Any]]] = None,
     vector_store: Any = None,
+    regulatory_evidence_store: Any = None,
     reader: Any = None,
 ) -> Dict[str, Any]:
     """Run the existing OCR-to-report pipeline from an image or OCR text.
@@ -134,6 +137,20 @@ def run_product_pipeline(
             if analysis is None:
                 continue
             analysis_results.append(analysis)
+            if config.regulatory_evidence_enabled:
+                if regulatory_evidence_store is None:
+                    errors.append(_error("regulatory_evidence", "regulatory evidence is enabled but no evidence store was supplied"))
+                else:
+                    try:
+                        sources = match_ingredient(regulatory_evidence_store, record["canonical_name"])
+                        evidence.append({
+                            "ingredient": record["canonical_name"],
+                            "status": "evidence_found" if sources else "insufficient_evidence",
+                            "sources": sources,
+                            "message": "Evidence retrieved from the configured local store." if sources else "No authoritative evidence available.",
+                        })
+                    except Exception as exc:
+                        errors.append(_error("regulatory_evidence", str(exc)))
             if config.rag_enabled:
                 if vector_store is None:
                     errors.append(_error("rag", "RAG is enabled but no vector store was supplied"))
