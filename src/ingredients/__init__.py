@@ -1,4 +1,16 @@
 from .ingredient_parser import parse_ingredients
 from .ingredient_normalizer import normalize_ingredient, normalize_ingredients
+from .ingredient_knowledge import (
+	get_ingredient_knowledge,
+	lookup_ingredient,
+	list_ingredient_knowledge,
+)
 
-__all__ = ["parse_ingredients", "normalize_ingredient", "normalize_ingredients"]
+__all__ = [
+	"parse_ingredients",
+	"normalize_ingredient",
+	"normalize_ingredients",
+	"get_ingredient_knowledge",
+	"lookup_ingredient",
+	"list_ingredient_knowledge",
+]
