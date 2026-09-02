@@ -5,6 +5,7 @@ from .ingredient_knowledge import (
 	lookup_ingredient,
 	list_ingredient_knowledge,
 )
+from .ingredient_section import extract_ingredient_section, normalize_ocr_text
 
 __all__ = [
 	"parse_ingredients",
@@ -13,4 +14,6 @@ __all__ = [
 	"get_ingredient_knowledge",
 	"lookup_ingredient",
 	"list_ingredient_knowledge",
+	"extract_ingredient_section",
+	"normalize_ocr_text",
 ]

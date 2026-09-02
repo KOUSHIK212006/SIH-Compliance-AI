@@ -1,11 +1,10 @@
 """End-to-end orchestration of the existing SIH analysis modules."""
 from dataclasses import dataclass
-import re
 from typing import Any, Dict, List, Optional
 
 from src.analysis import analyze_ingredient
 from src.compliance import evaluate_ingredients
-from src.ingredients import normalize_ingredient, parse_ingredients
+from src.ingredients import extract_ingredient_section, normalize_ingredient, parse_ingredients
 from src.rag import retrieve_ingredient_evidence
 from src.xai import explain_ingredient_analysis
 
@@ -26,21 +25,6 @@ def _error(stage: str, message: str) -> Dict[str, str]:
     return {"stage": stage, "message": message}
 
 
-def _extract_ingredient_section(text: str) -> Optional[str]:
-    """Return text after an Ingredients header, or None when absent."""
-    header = re.compile(
-        r"(?:^|\n|\r)\s*i\s*n\s*g\s*r\s*e\s*d\s*i\s*e\s*n\s*t\s*s\s*:?[ \t]*",
-        re.IGNORECASE,
-    )
-    match = header.search(text)
-    if not match:
-        return None
-    section = text[match.end():]
-    # Avoid treating common following package sections as ingredients.
-    section = re.split(r"\n\s*(?:allergen|allergens|may contain|nutrition|storage)\s*:", section, maxsplit=1, flags=re.IGNORECASE)[0]
-    return section.strip()
-
-
 def _ocr_result(image_path: str, config: PipelineConfig, reader: Any = None) -> Dict[str, Any]:
     from src.ocr import ocr_engine
 
@@ -52,12 +36,13 @@ def _ocr_result(image_path: str, config: PipelineConfig, reader: Any = None) -> 
     )
 
 
-def _empty_report(product: Dict[str, Any], ocr: Dict[str, Any], errors: List[Dict[str, str]], status: str) -> Dict[str, Any]:
+def _empty_report(product: Dict[str, Any], ocr: Dict[str, Any], errors: List[Dict[str, str]], status: str, section: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    section = section or {"found": False, "raw_text": "", "confidence": 0.0, "warnings": []}
     return {
         "status": status,
         "product": product,
         "ocr": ocr,
-        "ingredients": {"raw": [], "normalized": [], "details": []},
+        "ingredients": {"section_found": section.get("found", False), "section_text": section.get("raw_text", ""), "section_confidence": section.get("confidence", 0.0), "section": section, "raw": [], "normalized": [], "details": []},
         "analysis": {"overall_status": "not_available", "ingredient_results": []},
         "compliance": {"status": "not_available", "violations": [], "warnings": [], "findings": [], "errors": []},
         "evidence": [],
@@ -107,19 +92,22 @@ def run_product_pipeline(
     if isinstance(confidence, (int, float)) and confidence < config.ocr_confidence_threshold:
         errors.append(_error("ocr", f"OCR confidence {confidence:.3f} is below threshold {config.ocr_confidence_threshold:.3f}"))
 
-    section = _extract_ingredient_section(ocr_text_value)
-    if section is None:
-        return _empty_report(product, ocr, errors + [_error("parser", "ingredients section not found")], "no_ingredient_section")
+    section = extract_ingredient_section(ocr_text_value)
+    if not section["found"]:
+        return _empty_report(product, ocr, errors + [_error("parser", "ingredients section not found")], "no_ingredient_section", section)
+    section_text = section["raw_text"]
+    if not section_text:
+        return _empty_report(product, ocr, errors + [_error("parser", "ingredient section is empty")], "empty_ingredient_list", section)
 
     try:
-        parsed = parse_ingredients(section)
+        parsed = parse_ingredients(section_text)
     except Exception as exc:
         return _empty_report(product, ocr, errors + [_error("parser", str(exc))], "parser_failed")
 
     raw_values = [item["name"] for item in parsed.get("ingredients", []) if isinstance(item, dict) and item.get("name")]
     raw_values.extend(value for value in parsed.get("additives", []) if value)
     if not raw_values:
-        return _empty_report(product, ocr, errors + [_error("parser", "ingredient section is empty")], "empty_ingredient_list")
+        return _empty_report(product, ocr, errors + [_error("parser", "ingredient section is empty")], "empty_ingredient_list", section)
 
     normalized = []
     for raw in raw_values:
@@ -128,7 +116,7 @@ def run_product_pipeline(
         except Exception as exc:
             errors.append(_error("normalizer", str(exc)))
     if not normalized:
-        return _empty_report(product, ocr, errors + [_error("normalizer", "no ingredients could be normalized")], "normalization_failed")
+        return _empty_report(product, ocr, errors + [_error("normalizer", "no ingredients could be normalized")], "normalization_failed", section)
 
     details = parsed.get("ingredients", [])
     try:
@@ -172,7 +160,7 @@ def run_product_pipeline(
         "status": "review_required" if requires_review else "completed",
         "product": product,
         "ocr": {"text": ocr_text_value, "confidence": confidence, "details": ocr.get("details", []), "source": ocr.get("source", "image")},
-        "ingredients": {"raw": raw_values, "normalized": normalized, "details": details},
+        "ingredients": {"section_found": section["found"], "section_text": section["raw_text"], "section_confidence": section["confidence"], "section": section, "raw": raw_values, "normalized": normalized, "details": details},
         "analysis": {"overall_status": "review_required" if requires_review else "completed", "ingredient_results": analysis_results},
         "compliance": {"status": compliance.get("status"), "violations": violations, "warnings": warnings, "findings": compliance.get("findings", []), "errors": compliance.get("errors", [])},
         "evidence": evidence,
