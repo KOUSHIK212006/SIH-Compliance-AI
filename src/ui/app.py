@@ -9,10 +9,8 @@ try:
 except ImportError:  # pragma: no cover - exercised only before optional UI install
     st = None
 
-from src.decision import assess_product
-from src.label import extract_label_fields
-from src.ocr import OCRManager, OCRProviderError, VisionAPIConfigurationError
-from src.pipeline import run_product_pipeline
+from src.ocr import OCRProviderError, VisionAPIConfigurationError
+from src.service import AnalysisService, AnalysisServiceError
 from src.trace import build_trace, format_trace
 
 
@@ -37,20 +35,28 @@ def build_analysis_state(ocr_result: Any, pipeline_report: Dict[str, Any], decis
 
 
 def analyze_uploaded_image(uploaded_file: Any, mode: str, confidence_threshold: float) -> Dict[str, Any]:
-    """Run OCR manager, existing pipeline, label extraction, decision, and trace."""
+    """Run the unified AnalysisService on a temporary uploaded image."""
     suffix = Path(uploaded_file.name or "label.png").suffix or ".png"
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_file.write(uploaded_file.getvalue())
             temp_path = temp_file.name
-        manager = OCRManager(mode=mode, confidence_threshold=confidence_threshold)
-        ocr_result = manager.extract(temp_path)
-        pipeline_report = run_product_pipeline(ocr_text=ocr_result.text, product_data={"product_name": uploaded_file.name})
-        decision = assess_product(pipeline_report)
-        label_result = extract_label_fields(ocr_result.text)
-        trace = build_trace(pipeline_report, decision)
-        return build_analysis_state(ocr_result, pipeline_report, decision, label_result, trace)
+        result = AnalysisService().analyze_image(
+            temp_path,
+            ocr_mode=mode,
+            product_data={"product_name": uploaded_file.name},
+            confidence_threshold=confidence_threshold,
+        )
+        result_data = result.to_dict()
+        return {
+            "ocr": result_data["ocr_result"],
+            "pipeline": result_data["pipeline_result"],
+            "decision": result_data["decision"],
+            "label": result_data["label_fields"],
+            "trace": result_data["trace"],
+            "analysis_result": result_data,
+        }
     finally:
         if temp_path:
             Path(temp_path).unlink(missing_ok=True)

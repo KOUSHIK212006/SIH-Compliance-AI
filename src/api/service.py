@@ -3,8 +3,9 @@ from pathlib import Path
 import tempfile
 from typing import Any, Dict, Optional
 
-from src.decision import assess_product
+from src.ocr import OCRResult
 from src.pipeline import run_product_pipeline
+from src.service import AnalysisService, AnalysisServiceError
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -28,9 +29,9 @@ class APIServiceError(Exception):
 
 
 def build_assessment(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert an existing product-pipeline report into a ProductAssessment."""
+    """Compatibility helper using the unified service's decision adapter."""
     try:
-        return assess_product(report)
+        return AnalysisService()._decision_runner(report)
     except Exception as exc:
         raise APIServiceError("Product assessment failed") from exc
 
@@ -38,11 +39,13 @@ def build_assessment(report: Dict[str, Any]) -> Dict[str, Any]:
 def analyze_text(ingredient_text: str, product_name: Optional[str] = None, pipeline_runner: Any = run_product_pipeline) -> Dict[str, Any]:
     """Run the existing pipeline and decision engine for supplied text."""
     try:
-        report = pipeline_runner(
-            ocr_text=ingredient_text,
+        result = AnalysisService(pipeline_runner=pipeline_runner).analyze_ocr_result(
+            OCRResult(ingredient_text, None, source="provided_text"),
             product_data={"product_name": product_name} if product_name else {},
         )
-        return build_assessment(report)
+        return result.decision
+    except AnalysisServiceError as exc:
+        raise APIServiceError("Text analysis failed") from exc
     except APIServiceError:
         raise
     except Exception as exc:
@@ -71,13 +74,36 @@ async def analyze_image(upload: Any, product_name: Optional[str] = None, pipelin
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
             temporary.write(content)
             temporary_path = temporary.name
-        report = pipeline_runner(
-            image_path=temporary_path,
-            product_data={"product_name": product_name} if product_name else {},
-        )
-        if report.get("status") == "ocr_failed":
-            raise APIServiceError("Image OCR failed", 422)
-        return build_assessment(report)
+        service = AnalysisService(pipeline_runner=pipeline_runner)
+        if pipeline_runner is not run_product_pipeline:
+            injected_report = pipeline_runner(
+                image_path=temporary_path,
+                product_data={"product_name": product_name} if product_name else {},
+            )
+            if isinstance(injected_report, dict) and injected_report.get("status") == "ocr_failed":
+                raise APIServiceError("Image OCR failed", 422)
+            ocr_payload = injected_report.get("ocr", {}) if isinstance(injected_report, dict) else {}
+            ocr_text = ocr_payload.get("text") if isinstance(ocr_payload, dict) else None
+            if not ocr_text:
+                records = injected_report.get("ingredients", {}).get("normalized", [])
+                ocr_text = "Ingredients: " + ", ".join(
+                    item.get("raw", item.get("canonical_name", ""))
+                    for item in records
+                    if isinstance(item, dict) and item.get("canonical_name")
+                )
+            result = service.analyze_ocr_result(
+                OCRResult(ocr_text, ocr_payload.get("confidence"), source="injected_pipeline"),
+                product_data={"product_name": product_name} if product_name else {},
+            )
+        else:
+            result = service.analyze_image(
+                temporary_path,
+                ocr_mode="local",
+                product_data={"product_name": product_name} if product_name else {},
+            )
+        return result.decision
+    except AnalysisServiceError as exc:
+        raise APIServiceError(str(exc), 422 if "OCR" in str(exc) else 500) from exc
     except APIServiceError:
         raise
     except Exception as exc:
