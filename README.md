@@ -39,3 +39,19 @@ Automatically analyze product packaging using computer vision and OCR, extract r
 
 Auto-mode quality thresholds can be configured with `OCR_MIN_CONFIDENCE`,
 `OCR_MIN_USEFUL_TOKENS`, and `OCR_MIN_TEXT_LENGTH`.
+
+## Quick Demo
+
+Run the complete image-to-trace analysis locally:
+
+```powershell
+python -m scripts.run_demo path/to/image.png
+```
+
+The demo uses **LOCAL** mode by default and runs the canonical
+`AnalysisService` path through OCR, label extraction, ingredients, compliance,
+evidence, decision, XAI, and traceability. Use `--ocr-mode auto` to enable
+selective Vision API fallback, or `--ocr-mode api` to explicitly use Vision
+OCR. LOCAL and AUTO are preferred for normal operation because they keep the
+deterministic pipeline local and reduce external API usage; API mode requires
+both Vision API environment variables.
