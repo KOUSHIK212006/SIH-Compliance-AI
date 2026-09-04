@@ -1,5 +1,6 @@
 """Unified orchestration service for product analysis."""
 from dataclasses import replace
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from src.decision import assess_product
@@ -52,8 +53,9 @@ class AnalysisService:
         rules: Optional[List[Dict[str, Any]]] = None,
         vector_store: Any = None,
         regulatory_evidence_store: Any = None,
-        confidence_threshold: float = 0.70,
-        min_tokens: int = 2,
+        confidence_threshold: Optional[float] = None,
+        min_tokens: Optional[int] = None,
+        min_text_length: Optional[int] = None,
     ) -> AnalysisResult:
         """Analyze an image through OCR and all existing downstream modules."""
         if not isinstance(image_path, str) or not image_path.strip():
@@ -61,12 +63,16 @@ class AnalysisService:
         if ocr_mode not in {"local", "api", "auto"}:
             raise AnalysisServiceError("ocr_mode must be one of: local, api, auto")
 
+        started = time.perf_counter()
         try:
-            manager = self._ocr_manager_factory(
-                mode=ocr_mode,
-                confidence_threshold=confidence_threshold,
-                min_tokens=min_tokens,
-            )
+            manager_kwargs = {
+                "mode": ocr_mode,
+                "confidence_threshold": confidence_threshold,
+                "min_tokens": min_tokens,
+            }
+            if min_text_length is not None:
+                manager_kwargs["min_text_length"] = min_text_length
+            manager = self._ocr_manager_factory(**manager_kwargs)
             ocr_result = manager.extract(image_path)
         except OCRProviderError as exc:
             raise AnalysisServiceError(str(exc)) from exc
@@ -74,7 +80,7 @@ class AnalysisService:
             raise AnalysisServiceError("OCR stage failed") from exc
         if not isinstance(ocr_result, OCRResult):
             raise AnalysisServiceError("OCR manager returned an invalid OCRResult")
-        return self.analyze_ocr_result(
+        result = self.analyze_ocr_result(
             ocr_result,
             product_data=product_data,
             pipeline_config=pipeline_config,
@@ -82,6 +88,9 @@ class AnalysisService:
             vector_store=vector_store,
             regulatory_evidence_store=regulatory_evidence_store,
         )
+        if "ocr_duration_ms" in ocr_result.metadata:
+            result.ocr_result["metadata"]["analysis_duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        return result
 
     def analyze_ocr_result(
         self,

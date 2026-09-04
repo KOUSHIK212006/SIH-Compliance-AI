@@ -98,7 +98,7 @@ async def analyze_image(upload: Any, product_name: Optional[str] = None, pipelin
         else:
             result = service.analyze_image(
                 temporary_path,
-                ocr_mode="local",
+                ocr_mode="auto",
                 product_data={"product_name": product_name} if product_name else {},
             )
         return result.decision
